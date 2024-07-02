@@ -6,7 +6,6 @@ import {
   EntityManager,
   FindOptionsWhere,
   In,
-  IsNull,
   ObjectLiteral,
 } from 'typeorm'
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity'
@@ -135,33 +134,21 @@ export enum SortBy {
 const readingProgressDataSource = new ReadingProgressDataSource()
 
 export const batchGetLibraryItems = async (ids: readonly string[]) => {
-  const selectColumns: Array<keyof LibraryItem> = [
-    'id',
-    'title',
-    'author',
-    'thumbnail',
-    'wordCount',
-    'savedAt',
-    'originalUrl',
-    'directionality',
-    'description',
-    'subscription',
-    'siteName',
-    'siteIcon',
-    'archivedAt',
-    'deletedAt',
-    'slug',
-    'previewContent',
-  ]
-  const items = await authTrx(async (tx) =>
-    tx.getRepository(LibraryItem).find({
-      select: selectColumns,
-      where: {
-        id: In(ids as string[]),
-        state: LibraryItemState.Succeeded,
-        seenAt: IsNull(),
-      },
-    })
+  // select all columns except content
+  const select = getColumns(libraryItemRepository).filter(
+    (select) => ['originalContent', 'readableContent'].indexOf(select) === -1
+  )
+  const items = await authTrx(
+    async (tx) =>
+      tx.getRepository(LibraryItem).find({
+        select,
+        where: {
+          id: In(ids as string[]),
+        },
+      }),
+    {
+      replicationMode: 'replica',
+    }
   )
 
   return ids.map((id) => items.find((item) => item.id === id) || undefined)
@@ -724,8 +711,10 @@ export const createSearchQueryBuilder = (
 export const countLibraryItems = async (args: SearchArgs, userId: string) => {
   return authTrx(
     async (tx) => createSearchQueryBuilder(args, userId, tx).getCount(),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -746,8 +735,10 @@ export const searchLibraryItems = async (
         .skip(from)
         .take(size)
         .getMany(),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -791,8 +782,10 @@ export const findRecentLibraryItems = async (
         .take(limit)
         .skip(offset)
         .getMany(),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -815,8 +808,10 @@ export const findLibraryItemsByIds = async (
         .select(selectColumns)
         .where('library_item.id IN (:...ids)', { ids })
         .getMany(),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -843,8 +838,10 @@ export const findLibraryItemById = async (
         where: { id },
         relations: options?.relations,
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -865,8 +862,10 @@ export const findLibraryItemByUrl = async (
         .where('library_item.user_id = :userId', { userId })
         .andWhere('md5(library_item.original_url) = md5(:url)', { url })
         .getOne(),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -906,8 +905,9 @@ export const softDeleteLibraryItem = async (
 
       return itemRepo.findOneByOrFail({ id })
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 
   await pubsub.entityDeleted(EntityType.ITEM, id, userId)
@@ -941,8 +941,9 @@ export const updateLibraryItem = async (
 
       return itemRepo.findOneByOrFail({ id })
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 
   if (skipPubSub || libraryItem.state === LibraryItemState.Processing) {
@@ -1015,8 +1016,9 @@ export const updateLibraryItemReadingProgress = async (
       `,
         [id, topPercent, bottomPercent, anchorIndex]
       ),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )) as [LibraryItem[], number]
   if (result[1] === 0) {
     return null
@@ -1034,8 +1036,9 @@ export const createLibraryItems = async (
 ): Promise<LibraryItem[]> => {
   return authTrx(
     async (tx) => tx.withRepository(libraryItemRepository).save(libraryItems),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -1111,8 +1114,9 @@ export const createOrUpdateLibraryItem = async (
       // create or update library item
       return repo.upsertLibraryItemById(libraryItem)
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 
   // set recently saved item in redis if redis is enabled
@@ -1159,17 +1163,21 @@ export const findLibraryItemsByPrefix = async (
 ): Promise<LibraryItem[]> => {
   const prefixWildcard = `${prefix}%`
 
-  return authTrx(async (tx) =>
-    tx
-      .createQueryBuilder(LibraryItem, 'library_item')
-      .where('library_item.user_id = :userId', { userId })
-      .andWhere(
-        '(library_item.title ILIKE :prefix OR library_item.site_name ILIKE :prefix)',
-        { prefix: prefixWildcard }
-      )
-      .orderBy('library_item.savedAt', 'DESC')
-      .limit(limit)
-      .getMany()
+  return authTrx(
+    async (tx) =>
+      tx
+        .createQueryBuilder(LibraryItem, 'library_item')
+        .where('library_item.user_id = :userId', { userId })
+        .andWhere(
+          '(library_item.title ILIKE :prefix OR library_item.site_name ILIKE :prefix)',
+          { prefix: prefixWildcard }
+        )
+        .orderBy('library_item.savedAt', 'DESC')
+        .limit(limit)
+        .getMany(),
+    {
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -1188,8 +1196,10 @@ export const countBySavedAt = async (
           endDate,
         })
         .getCount(),
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
@@ -1270,8 +1280,9 @@ export const batchUpdateLibraryItems = async (
 
       const libraryItemIds = await authTrx(
         async (tx) => getLibraryItemIds(userId, tx),
-        undefined,
-        userId
+        {
+          uid: userId,
+        }
       )
       // add labels to library items
       for (const libraryItemId of libraryItemIds) {
@@ -1283,8 +1294,9 @@ export const batchUpdateLibraryItems = async (
     case BulkActionType.MarkAsRead: {
       const libraryItemIds = await authTrx(
         async (tx) => getLibraryItemIds(userId, tx),
-        undefined,
-        userId
+        {
+          uid: userId,
+        }
       )
       // update reading progress for library items
       for (const libraryItemId of libraryItemIds) {
@@ -1318,16 +1330,18 @@ export const batchUpdateLibraryItems = async (
       const libraryItemIds = await getLibraryItemIds(userId, tx, true)
       await tx.getRepository(LibraryItem).update(libraryItemIds, values)
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
 export const deleteLibraryItemById = async (id: string, userId?: string) => {
   return authTrx(
     async (tx) => tx.withRepository(libraryItemRepository).delete(id),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -1338,8 +1352,9 @@ export const deleteLibraryItems = async (
   return authTrx(
     async (tx) =>
       tx.withRepository(libraryItemRepository).delete(items.map((i) => i.id)),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -1349,8 +1364,9 @@ export const deleteLibraryItemByUrl = async (url: string, userId: string) => {
       tx
         .withRepository(libraryItemRepository)
         .delete({ originalUrl: url, user: { id: userId } }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -1360,8 +1376,9 @@ export const deleteLibraryItemsByUserId = async (userId: string) => {
       tx.withRepository(libraryItemRepository).delete({
         user: { id: userId },
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -1420,8 +1437,10 @@ export const findLibraryItemIdsByLabelId = async (
 
       return result.map((r) => r.library_item_id)
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+      replicationMode: 'replica',
+    }
   )
 }
 
