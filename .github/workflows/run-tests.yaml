@@ -77,6 +77,7 @@ jobs:
           PG_PASSWORD: postgres
           PG_DB: omnivore_test
           PGPASSWORD: postgres # This is required for the psql command to work without a password prompt
+          PG_EXTRA_OPTIONS: '-c lock_timeout=2000'
       - name: TypeScript Build and Lint
         run: |
           source ~/.nvm/nvm.sh
@@ -110,7 +111,5 @@ jobs:
         run: 'docker build --file packages/content-fetch/Dockerfile .'
       - name: Build the inbound-email-handler docker image
         run: 'docker build --file packages/inbound-email-handler/Dockerfile .'
-      - name: Build the content-fetch cloud function docker image
-        run: 'docker build --file packages/content-fetch/Dockerfile-gcf .'
       - name: Build the tts docker image
         run: 'docker build --file packages/text-to-speech/Dockerfile .'

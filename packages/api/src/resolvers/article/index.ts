@@ -4,7 +4,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-floating-promises */
 import { Readability } from '@omnivore/readability'
-import graphqlFields from 'graphql-fields'
 import {
   ContentReaderType,
   LibraryItem,
@@ -38,6 +37,7 @@ import {
   MutationSaveArticleReadingProgressArgs,
   MutationSetBookmarkArticleArgs,
   MutationSetFavoriteArticleArgs,
+  PageInfo,
   PageType,
   QueryArticleArgs,
   QuerySearchArgs,
@@ -63,7 +63,7 @@ import {
   UpdatesSinceError,
   UpdatesSinceSuccess,
 } from '../../generated/graphql'
-import { getColumns } from '../../repository'
+import { authTrx, getColumns } from '../../repository'
 import { getInternalLabelWithColor } from '../../repository/label'
 import { libraryItemRepository } from '../../repository/library_item'
 import { userRepository } from '../../repository/user'
@@ -79,8 +79,10 @@ import {
   batchUpdateLibraryItems,
   countLibraryItems,
   createOrUpdateLibraryItem,
+  deleteCachedTotalCount,
   findLibraryItemsByPrefix,
-  searchAndCountLibraryItems,
+  SearchArgs,
+  searchLibraryItems,
   softDeleteLibraryItem,
   sortParamsToSort,
   updateLibraryItem,
@@ -97,7 +99,7 @@ import { Merge } from '../../util'
 import { analytics } from '../../utils/analytics'
 import { isSiteBlockedForParse } from '../../utils/blocked'
 import { enqueueBulkAction } from '../../utils/createTask'
-import { authorized } from '../../utils/gql-utils'
+import { authorized, isFieldInSelectionSet } from '../../utils/gql-utils'
 import {
   cleanUrl,
   errorHandler,
@@ -106,7 +108,6 @@ import {
   titleForFilePath,
 } from '../../utils/helpers'
 import {
-  getDistillerResult,
   htmlToMarkdown,
   ParsedContentPuppeteer,
   parsePreparedContent,
@@ -116,7 +117,6 @@ import { getStorageFileDetails } from '../../utils/uploads'
 export enum ArticleFormat {
   Markdown = 'markdown',
   Html = 'html',
-  Distiller = 'distiller',
   HighlightedMarkdown = 'highlightedMarkdown',
 }
 
@@ -318,13 +318,6 @@ export const createArticleResolver = authorized<
         savedAt,
       })
 
-      log.info('New article saving', {
-        parsedArticle: Object.assign({}, libraryItemToSave, {
-          readableContent: undefined,
-          originalContent: undefined,
-        }),
-      })
-
       if (uploadFileId) {
         const uploadFileData = await setFileUploadComplete(uploadFileId)
         if (!uploadFileData || !uploadFileData.id || !uploadFileData.fileName) {
@@ -376,46 +369,48 @@ export const getArticleResolver = authorized<
   Merge<ArticleSuccess, { article: LibraryItem }>,
   ArticleError,
   QueryArticleArgs
->(async (_obj, { slug, format }, { authTrx, uid, log }, info) => {
+>(async (_obj, { slug, format }, { uid, log }) => {
   try {
     const selectColumns = getColumns(libraryItemRepository)
-    const includeOriginalHtml =
-      format === ArticleFormat.Distiller ||
-      !!graphqlFields(info).article.originalHtml
-    if (!includeOriginalHtml) {
-      selectColumns.splice(selectColumns.indexOf('originalContent'), 1)
-    }
 
-    const libraryItem = await authTrx((tx) => {
-      const qb = tx
-        .createQueryBuilder(LibraryItem, 'libraryItem')
-        .select(selectColumns.map((column) => `libraryItem.${column}`))
-        .leftJoinAndSelect('libraryItem.labels', 'labels')
-        .leftJoinAndSelect('libraryItem.highlights', 'highlights')
-        .leftJoinAndSelect('highlights.labels', 'highlights_labels')
-        .leftJoinAndSelect('highlights.user', 'highlights_user')
-        .leftJoinAndSelect('highlights_user.profile', 'highlights_user_profile')
-        .leftJoinAndSelect('libraryItem.uploadFile', 'uploadFile')
-        .leftJoinAndSelect('libraryItem.recommendations', 'recommendations')
-        .leftJoinAndSelect('recommendations.group', 'recommendations_group')
-        .leftJoinAndSelect(
-          'recommendations.recommender',
-          'recommendations_recommender'
-        )
-        .leftJoinAndSelect(
-          'recommendations_recommender.profile',
-          'recommendations_recommender_profile'
-        )
-        .where('libraryItem.user_id = :uid', { uid })
+    const libraryItem = await authTrx(
+      (tx) => {
+        const qb = tx
+          .createQueryBuilder(LibraryItem, 'libraryItem')
+          .select(selectColumns.map((column) => `libraryItem.${column}`))
+          .leftJoinAndSelect('libraryItem.labels', 'labels')
+          .leftJoinAndSelect('libraryItem.highlights', 'highlights')
+          .leftJoinAndSelect('highlights.labels', 'highlights_labels')
+          .leftJoinAndSelect('highlights.user', 'highlights_user')
+          .leftJoinAndSelect(
+            'highlights_user.profile',
+            'highlights_user_profile'
+          )
+          .leftJoinAndSelect('libraryItem.uploadFile', 'uploadFile')
+          .leftJoinAndSelect('libraryItem.recommendations', 'recommendations')
+          .leftJoinAndSelect('recommendations.group', 'recommendations_group')
+          .leftJoinAndSelect(
+            'recommendations.recommender',
+            'recommendations_recommender'
+          )
+          .leftJoinAndSelect(
+            'recommendations_recommender.profile',
+            'recommendations_recommender_profile'
+          )
+          .where('libraryItem.user_id = :uid', { uid })
 
-      // We allow the backend to use the ID instead of a slug to fetch the article
-      // query against id if slug is a uuid
-      slug.match(/^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i)
-        ? qb.andWhere('libraryItem.id = :id', { id: slug })
-        : qb.andWhere('libraryItem.slug = :slug', { slug })
+        // We allow the backend to use the ID instead of a slug to fetch the article
+        // query against id if slug is a uuid
+        slug.match(/^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i)
+          ? qb.andWhere('libraryItem.id = :id', { id: slug })
+          : qb.andWhere('libraryItem.slug = :slug', { slug })
 
-      return qb.andWhere('libraryItem.deleted_at IS NULL').getOne()
-    })
+        return qb.getOne()
+      },
+      {
+        replicationMode: 'replica',
+      }
+    )
 
     if (!libraryItem) {
       return { errorCodes: [ArticleErrorCode.NotFound] }
@@ -427,18 +422,6 @@ export const getArticleResolver = authorized<
 
     if (format === ArticleFormat.Markdown) {
       libraryItem.readableContent = htmlToMarkdown(libraryItem.readableContent)
-    } else if (format === ArticleFormat.Distiller) {
-      if (!libraryItem.originalContent) {
-        return { errorCodes: [ArticleErrorCode.BadData] }
-      }
-      const distillerResult = await getDistillerResult(
-        uid,
-        libraryItem.originalContent
-      )
-      if (!distillerResult) {
-        return { errorCodes: [ArticleErrorCode.BadData] }
-      }
-      libraryItem.readableContent = distillerResult
     }
 
     return {
@@ -471,12 +454,6 @@ export const setBookmarkArticleResolver = authorized<
     },
   })
 
-  log.info('Article unbookmarked', {
-    item: Object.assign({}, deletedLibraryItem, {
-      readableContent: undefined,
-      originalContent: undefined,
-    }),
-  })
   // Make sure article.id instead of userArticle.id has passed. We use it for cache updates
   return {
     bookmarkedArticle: deletedLibraryItem,
@@ -499,7 +476,7 @@ export const saveArticleReadingProgressResolver = authorized<
         force,
       },
     },
-    { authTrx, pubsub, uid, dataSources }
+    { pubsub, uid, dataSources }
   ) => {
     if (
       readingProgressPercent < 0 ||
@@ -515,13 +492,17 @@ export const saveArticleReadingProgressResolver = authorized<
     // We don't need to update the values of reading progress here
     // because the function resolver will handle that for us when
     // it resolves the properties of the Article object
-    let updatedItem = await authTrx((tx) =>
-      tx.getRepository(LibraryItem).findOne({
-        where: {
-          id,
-        },
-        relations: ['user'],
-      })
+    let updatedItem = await authTrx(
+      (tx) =>
+        tx.getRepository(LibraryItem).findOne({
+          where: {
+            id,
+          },
+          relations: ['user'],
+        }),
+      {
+        replicationMode: 'replica',
+      }
     )
     if (!updatedItem) {
       return {
@@ -591,11 +572,18 @@ export const saveArticleReadingProgressResolver = authorized<
 
 export type PartialLibraryItem = Merge<LibraryItem, { format?: string }>
 type PartialSearchItemEdge = Merge<SearchItemEdge, { node: PartialLibraryItem }>
+export type PartialPageInfo = Merge<
+  PageInfo,
+  { searchLibraryItemArgs?: SearchArgs }
+>
 export const searchResolver = authorized<
-  Merge<SearchSuccess, { edges: Array<PartialSearchItemEdge> }>,
+  Merge<
+    SearchSuccess,
+    { edges: Array<PartialSearchItemEdge>; pageInfo: PartialPageInfo }
+  >,
   SearchError,
   QuerySearchArgs
->(async (_obj, params, { uid }) => {
+>(async (_obj, params, { uid }, info) => {
   const startCursor = params.after || ''
   const first = Math.min(params.first || 10, 100) // limit to 100 items
 
@@ -604,15 +592,24 @@ export const searchResolver = authorized<
     return { errorCodes: [SearchErrorCode.QueryTooLong] }
   }
 
-  const { libraryItems, count } = await searchAndCountLibraryItems(
+  const selectionSet = info.fieldNodes[0].selectionSet
+  const isContentRequested = selectionSet
+    ? isFieldInSelectionSet(selectionSet, 'content')
+    : false
+
+  const searchLibraryItemArgs = {
+    includePending: true,
+    includeContent: params.includeContent || isContentRequested,
+    includeDeleted: params.query?.includes('in:trash'),
+    query: params.query,
+    useFolders: params.query?.includes('use:folders'),
+  }
+
+  const libraryItems = await searchLibraryItems(
     {
+      ...searchLibraryItemArgs,
       from: Number(startCursor),
       size: first + 1, // fetch one more item to get next cursor
-      includePending: true,
-      includeContent: params.includeContent ?? true, // by default include content for offline use for now
-      includeDeleted: params.query?.includes('in:trash'),
-      query: params.query,
-      useFolders: params.query?.includes('use:folders'),
     },
     uid
   )
@@ -640,7 +637,7 @@ export const searchResolver = authorized<
       startCursor,
       hasNextPage,
       endCursor,
-      totalCount: count,
+      searchLibraryItemArgs,
     },
   }
 })
@@ -666,7 +663,10 @@ export const typeaheadSearchResolver = authorized<
 })
 
 export const updatesSinceResolver = authorized<
-  Merge<UpdatesSinceSuccess, { edges: Array<PartialSearchItemEdge> }>,
+  Merge<
+    UpdatesSinceSuccess,
+    { edges: Array<PartialSearchItemEdge>; pageInfo: PartialPageInfo }
+  >,
   UpdatesSinceError,
   QueryUpdatesSinceArgs
 >(async (_obj, { since, first, after, sort: sortParams, folder }, { uid }) => {
@@ -680,17 +680,22 @@ export const updatesSinceResolver = authorized<
   const sort = sortParamsToSort(sortParams)
 
   // create a search query
-  const query = `updated:${startDate.toISOString()}${
-    folder ? ' in:' + folder : ''
-  } sort:${sort.by}-${sort.order}`
+  const query = `in:${
+    folder || 'all'
+  } updated:${startDate.toISOString()} sort:${sort.by}-${sort.order}`
 
-  const { libraryItems, count } = await searchAndCountLibraryItems(
+  const searchLibraryItemArgs = {
+    includeDeleted: true,
+    query,
+    includeContent: false,
+  }
+
+  const libraryItems = await searchLibraryItems(
     {
+      ...searchLibraryItemArgs,
       from: Number(startCursor),
       size: size + 1, // fetch one more item to get next cursor
-      includeDeleted: true,
-      query,
-      includeContent: true, // by default include content for offline use for now
+      useFolders: true,
     },
     uid
   )
@@ -723,7 +728,7 @@ export const updatesSinceResolver = authorized<
       startCursor,
       hasNextPage,
       endCursor,
-      totalCount: count,
+      searchLibraryItemArgs,
     },
   }
 })
@@ -748,9 +753,10 @@ export const bulkActionResolver = authorized<
         },
       })
 
-      const batchSize = 100
+      const batchSize = 20
       const searchArgs = {
         query,
+        includePending: true,
         size: 0,
       }
       const count = await countLibraryItems(searchArgs, uid)
@@ -766,13 +772,15 @@ export const bulkActionResolver = authorized<
           action,
           count,
         })
-        // if there are less than 100 items, update them synchronously
+        // if there are less than batchSize items, update them synchronously
         await batchUpdateLibraryItems(action, searchArgs, uid, labelIds, args)
+
+        await deleteCachedTotalCount(uid)
 
         return { success: true }
       }
 
-      // if there are more than 100 items, update them asynchronously
+      // if there are more than batchSize items, update them asynchronously
       const data = {
         userId: uid,
         action,
@@ -787,6 +795,8 @@ export const bulkActionResolver = authorized<
       if (!job) {
         return { errorCodes: [BulkActionErrorCode.BadRequest] }
       }
+
+      await deleteCachedTotalCount(uid)
 
       return { success: true }
     } catch (error) {
@@ -838,7 +848,7 @@ export const moveToFolderResolver = authorized<
   MoveToFolderSuccess,
   MoveToFolderError,
   MutationMoveToFolderArgs
->(async (_, { id, folder }, { authTrx, log, pubsub, uid }) => {
+>(async (_, { id, folder }, { log, pubsub, uid }) => {
   analytics.capture({
     distinctId: uid,
     event: 'move_to_folder',
@@ -848,13 +858,17 @@ export const moveToFolderResolver = authorized<
     },
   })
 
-  const item = await authTrx((tx) =>
-    tx.getRepository(LibraryItem).findOne({
-      where: {
-        id,
-      },
-      relations: ['user'],
-    })
+  const item = await authTrx(
+    (tx) =>
+      tx.getRepository(LibraryItem).findOne({
+        where: {
+          id,
+        },
+        relations: ['user'],
+      }),
+    {
+      replicationMode: 'replica',
+    }
   )
 
   if (!item) {
@@ -913,7 +927,7 @@ export const fetchContentResolver = authorized<
   FetchContentSuccess,
   FetchContentError,
   MutationFetchContentArgs
->(async (_, { id }, { authTrx, uid, log, pubsub }) => {
+>(async (_, { id }, { uid, log, pubsub }) => {
   analytics.capture({
     distinctId: uid,
     event: 'fetch_content',
@@ -922,13 +936,17 @@ export const fetchContentResolver = authorized<
     },
   })
 
-  const item = await authTrx((tx) =>
-    tx.getRepository(LibraryItem).findOne({
-      where: {
-        id,
-      },
-      relations: ['user'],
-    })
+  const item = await authTrx(
+    (tx) =>
+      tx.getRepository(LibraryItem).findOne({
+        where: {
+          id,
+        },
+        relations: ['user'],
+      }),
+    {
+      replicationMode: 'replica',
+    }
   )
   if (!item) {
     return {
@@ -975,6 +993,8 @@ export const emptyTrashResolver = authorized<
     },
     state: LibraryItemState.Deleted,
   })
+
+  await deleteCachedTotalCount(uid)
 
   return {
     success: true,

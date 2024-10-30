@@ -7,11 +7,11 @@ import {
   CardCheckbox,
   LibraryItemMetadata,
   MetaStyle,
-  siteName,
   TitleStyle,
   MenuStyle,
   FLAIR_ICON_NAMES,
 } from './LibraryCardStyles'
+import { shouldHideUrl, siteName } from '../../../lib/textFormatting'
 import { sortedLabels } from '../../../lib/labelsSort'
 import { LIBRARY_LEFT_MENU_WIDTH } from '../../templates/navMenu/LibraryMenu'
 import { LibraryHoverActions } from './LibraryHoverActions'
@@ -85,11 +85,14 @@ export function LibraryListCard(props: LinkedItemCardProps): JSX.Element {
         height: '100%',
         cursor: 'pointer',
         gap: '10px',
-        borderStyle: 'none',
-        borderBottom: 'none',
-        borderRadius: '6px',
+        borderBottom: props.legacyLayout
+          ? 'unset'
+          : '1px solid $thLeftMenuBackground',
         '@media (max-width: 930px)': {
           borderRadius: '0px',
+        },
+        '&:hover': {
+          borderBottom: 'unset',
         },
         ...layoutWidths,
       }}
@@ -100,7 +103,7 @@ export function LibraryListCard(props: LinkedItemCardProps): JSX.Element {
           props.setIsChecked(props.item.id, !props.isChecked)
           return
         }
-        window.sessionStorage.setItem('nav-return', router.asPath)
+        window.localStorage.setItem('nav-return', router.asPath)
         if (event.metaKey || event.ctrlKey) {
           window.open(
             `/${props.viewer.profile.username}/${props.item.slug}`,

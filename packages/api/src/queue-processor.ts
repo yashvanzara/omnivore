@@ -35,6 +35,7 @@ import {
   expireFoldersJob,
   EXPIRE_FOLDERS_JOB_NAME,
 } from './jobs/expire_folders'
+import { exportJob, EXPORT_JOB_NAME } from './jobs/export'
 import { findThumbnail, THUMBNAIL_JOB } from './jobs/find_thumbnail'
 import {
   generatePreviewContent,
@@ -82,7 +83,9 @@ import { CACHED_READING_POSITION_PREFIX } from './services/cached_reading_positi
 import { getJobPriority } from './utils/createTask'
 import { logger } from './utils/logger'
 
-export const QUEUE_NAME = 'omnivore-backend-queue'
+export const BACKEND_QUEUE_NAME = 'omnivore-backend-queue'
+export const CONTENT_FETCH_QUEUE = 'omnivore-content-fetch-queue'
+
 export const JOB_VERSION = 'v001'
 
 const jobLatency = new client.Histogram({
@@ -92,12 +95,10 @@ const jobLatency = new client.Histogram({
   buckets: [0, 1, 5, 10, 50, 100, 500],
 })
 
-jobLatency.observe(10)
-
 registerMetric(jobLatency)
 
-export const getBackendQueue = async (
-  name = QUEUE_NAME
+export const getQueue = async (
+  name = BACKEND_QUEUE_NAME
 ): Promise<Queue | undefined> => {
   if (!redisDataSource.workerRedisClient) {
     throw new Error('Can not create queues, redis is not initialized')
@@ -111,10 +112,10 @@ export const getBackendQueue = async (
         delay: 2000, // 2 seconds
       },
       removeOnComplete: {
-        age: 24 * 3600, // keep up to 24 hours
+        age: 3600, // keep up to 1 hour
       },
       removeOnFail: {
-        age: 7 * 24 * 3600, // keep up to 7 days
+        age: 24 * 3600, // keep up to 1 day
       },
     },
   })
@@ -126,7 +127,7 @@ export const createJobId = (jobName: string, userId: string) =>
   `${jobName}_${userId}_${JOB_VERSION}`
 
 export const getJob = async (jobId: string, queueName?: string) => {
-  const queue = await getBackendQueue(queueName)
+  const queue = await getQueue(queueName)
   if (!queue) {
     return
   }
@@ -154,12 +155,12 @@ export const jobStateToTaskState = (
 
 export const createWorker = (connection: ConnectionOptions) =>
   new Worker(
-    QUEUE_NAME,
+    BACKEND_QUEUE_NAME,
     async (job: Job) => {
       const executeJob = async (job: Job) => {
         switch (job.name) {
           case 'refresh-all-feeds': {
-            const queue = await getBackendQueue()
+            const queue = await getQueue()
             const counts = await queue?.getJobCounts('prioritized')
             if (counts && counts.wait > 1000) {
               return
@@ -223,6 +224,8 @@ export const createWorker = (connection: ConnectionOptions) =>
             return pruneTrashJob(job.data)
           case EXPIRE_FOLDERS_JOB_NAME:
             return expireFoldersJob()
+          case EXPORT_JOB_NAME:
+            return exportJob(job.data)
           default:
             logger.warning(`[queue-processor] unhandled job: ${job.name}`)
         }
@@ -241,7 +244,7 @@ export const createWorker = (connection: ConnectionOptions) =>
   )
 
 const setupCronJobs = async () => {
-  const queue = await getBackendQueue()
+  const queue = await getQueue()
   if (!queue) {
     logger.error('Unable to setup cron jobs. Queue is not available.')
     return
@@ -280,7 +283,7 @@ const main = async () => {
   })
 
   app.get('/metrics', async (_, res) => {
-    const queue = await getBackendQueue()
+    const queue = await getQueue()
     if (!queue) {
       res.sendStatus(400)
       return
@@ -297,7 +300,7 @@ const main = async () => {
 
     jobsTypes.forEach((metric, idx) => {
       output += `# TYPE omnivore_queue_messages_${metric} gauge\n`
-      output += `omnivore_queue_messages_${metric}{queue="${QUEUE_NAME}"} ${counts[metric]}\n`
+      output += `omnivore_queue_messages_${metric}{queue="${BACKEND_QUEUE_NAME}"} ${counts[metric]}\n`
     })
 
     if (redisDataSource.redisClient) {
@@ -313,7 +316,7 @@ const main = async () => {
       )
       if (cursor != '0') {
         output += `# TYPE omnivore_read_position_messages gauge\n`
-        output += `omnivore_read_position_messages{queue="${QUEUE_NAME}"} ${10_001}\n`
+        output += `omnivore_read_position_messages{queue="${BACKEND_QUEUE_NAME}"} ${10_001}\n`
       } else if (batch) {
         output += `# TYPE omnivore_read_position_messages gauge\n`
         output += `omnivore_read_position_messages{} ${batch.length}\n`
@@ -326,10 +329,10 @@ const main = async () => {
       const currentTime = Date.now()
       const ageInSeconds = (currentTime - oldestJobs[0].timestamp) / 1000
       output += `# TYPE omnivore_queue_messages_oldest_job_age_seconds gauge\n`
-      output += `omnivore_queue_messages_oldest_job_age_seconds{queue="${QUEUE_NAME}"} ${ageInSeconds}\n`
+      output += `omnivore_queue_messages_oldest_job_age_seconds{queue="${BACKEND_QUEUE_NAME}"} ${ageInSeconds}\n`
     } else {
       output += `# TYPE omnivore_queue_messages_oldest_job_age_seconds gauge\n`
-      output += `omnivore_queue_messages_oldest_job_age_seconds{queue="${QUEUE_NAME}"} ${0}\n`
+      output += `omnivore_queue_messages_oldest_job_age_seconds{queue="${BACKEND_QUEUE_NAME}"} ${0}\n`
     }
 
     const metrics = await getMetrics()
@@ -358,26 +361,6 @@ const main = async () => {
   const worker = createWorker(workerRedisClient)
 
   await setupCronJobs()
-
-  const queueEvents = new QueueEvents(QUEUE_NAME, {
-    connection: workerRedisClient,
-  })
-
-  queueEvents.on('added', async (job) => {
-    console.log('added job: ', job.jobId, job.name)
-  })
-
-  queueEvents.on('removed', async (job) => {
-    console.log('removed job: ', job.jobId)
-  })
-
-  queueEvents.on('completed', async (job) => {
-    console.log('completed job: ', job.jobId)
-  })
-
-  queueEvents.on('failed', async (job) => {
-    console.log('failed job: ', job.jobId)
-  })
 
   workerRedisClient.on('error', (error) => {
     console.trace('[queue-processor]: redis worker error', { error })

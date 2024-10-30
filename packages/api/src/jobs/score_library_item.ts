@@ -1,5 +1,10 @@
-import { findLibraryItemById } from '../services/library_item'
+import { SubscriptionType } from '../entity/subscription'
+import {
+  findLibraryItemById,
+  updateLibraryItem,
+} from '../services/library_item'
 import { Feature, scoreClient } from '../services/score'
+import { findSubscriptionsByNames } from '../services/subscriptions'
 import { enqueueUpdateHomeJob } from '../utils/createTask'
 import { lanaugeToCode } from '../utils/helpers'
 import { logger } from '../utils/logger'
@@ -31,11 +36,33 @@ export const scoreLibraryItem = async (
       'author',
       'itemLanguage',
       'wordCount',
+      'subscription',
+      'publishedAt',
     ],
   })
   if (!libraryItem) {
     logger.error('Library item not found', data)
     return
+  }
+
+  let subscription
+  if (libraryItem.subscription) {
+    const subscriptions = await findSubscriptionsByNames(userId, [
+      libraryItem.subscription,
+    ])
+
+    if (subscriptions.length) {
+      subscription = subscriptions[0]
+
+      if (subscription.type === SubscriptionType.Rss) {
+        logger.info('Skipping scoring for RSS subscription', {
+          userId,
+          libraryItemId,
+        })
+
+        return
+      }
+    }
   }
 
   const itemFeatures = {
@@ -46,6 +73,7 @@ export const scoreLibraryItem = async (
       has_site_icon: !!libraryItem.siteIcon,
       saved_at: libraryItem.savedAt,
       site: libraryItem.siteName,
+      original_url: libraryItem.originalUrl,
       directionality: libraryItem.directionality,
       folder: libraryItem.folder,
       subscription_type: 'library',
@@ -53,7 +81,15 @@ export const scoreLibraryItem = async (
       language: lanaugeToCode(libraryItem.itemLanguage || 'English'),
       word_count: libraryItem.wordCount,
       published_at: libraryItem.publishedAt,
-      subscription: libraryItem.subscription,
+      subscription: subscription?.name,
+      inbox_folder: libraryItem.folder === 'inbox',
+      is_feed: subscription?.type === SubscriptionType.Rss,
+      is_newsletter: subscription?.type === SubscriptionType.Newsletter,
+      is_subscription: !!subscription,
+      item_word_count: libraryItem.wordCount,
+      subscription_auto_add_to_library: subscription?.autoAddToLibrary,
+      subscription_fetch_content: subscription?.fetchContent,
+      subscription_count: 0,
     } as Feature,
   }
 
@@ -62,23 +98,21 @@ export const scoreLibraryItem = async (
     items: itemFeatures,
   })
 
-  logger.info('Scores', scores)
-  const score = scores[libraryItem.id]['score']
+  const score = scores[libraryItem.id].score
   if (!score) {
     logger.error('Failed to score library item', data)
-    throw new Error('Failed to score library item')
+  } else {
+    await updateLibraryItem(
+      libraryItem.id,
+      {
+        score,
+      },
+      userId,
+      undefined,
+      true
+    )
+    logger.info('Library item score updated', data)
   }
-
-  // await updateLibraryItem(
-  //   libraryItem.id,
-  //   {
-  //     score,
-  //   },
-  //   userId,
-  //   undefined,
-  //   true
-  // )
-  logger.info('Library item scored', data)
 
   try {
     await enqueueUpdateHomeJob({

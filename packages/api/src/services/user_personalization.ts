@@ -1,10 +1,11 @@
-import { DeepPartial, IsNull } from 'typeorm'
-import { Shortcut, UserPersonalization } from '../entity/user_personalization'
-import { authTrx } from '../repository'
-import { findLabelsByUserId } from './labels'
-import { findSubscriptionById } from './subscriptions'
+import { DeepPartial } from 'typeorm'
 import { Filter } from '../entity/filter'
 import { Subscription, SubscriptionStatus } from '../entity/subscription'
+import { Shortcut, UserPersonalization } from '../entity/user_personalization'
+import { redisDataSource } from '../redis_data_source'
+import { authTrx } from '../repository'
+import { logger } from '../utils/logger'
+import { findLabelsByUserId } from './labels'
 
 export const findUserPersonalization = async (userId: string) => {
   return authTrx(
@@ -12,8 +13,9 @@ export const findUserPersonalization = async (userId: string) => {
       t.getRepository(UserPersonalization).findOneBy({
         user: { id: userId },
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -23,8 +25,9 @@ export const deleteUserPersonalization = async (userId: string) => {
       t.getRepository(UserPersonalization).delete({
         user: { id: userId },
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -34,8 +37,9 @@ export const saveUserPersonalization = async (
 ) => {
   return authTrx(
     (t) => t.getRepository(UserPersonalization).save(userPersonalization),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -45,8 +49,9 @@ export const getShortcuts = async (userId: string): Promise<Shortcut[]> => {
       t.getRepository(UserPersonalization).findOneBy({
         user: { id: userId },
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
   if (personalization?.shortcuts) {
     return personalization?.shortcuts as Shortcut[]
@@ -67,8 +72,9 @@ export const resetShortcuts = async (userId: string): Promise<boolean> => {
         })
         .execute()
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
   if (!result) {
     throw Error('Could not update shortcuts')
@@ -82,18 +88,18 @@ export const setShortcuts = async (
 ): Promise<Shortcut[]> => {
   const result = await authTrx(
     (t) =>
-      t.getRepository(UserPersonalization).update(
+      t.getRepository(UserPersonalization).upsert(
         {
           user: { id: userId },
-        },
-        {
           shortcuts: shortcuts,
-        }
+        },
+        ['user']
       ),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
-  if (!result.affected || result.affected < 1) {
+  if (!result.identifiers || result.identifiers.length < 1) {
     throw Error('Could not update shortcuts')
   }
   return shortcuts
@@ -125,7 +131,7 @@ const userDefaultShortcuts = async (userId: string): Promise<Shortcut[]> => {
           id: label.id,
           type: 'label',
           name: label.name,
-          section: 'library',
+          section: 'search',
           label: label,
           filter: `in:all label:"${label.name}"`,
         }
@@ -160,10 +166,31 @@ const userDefaultShortcuts = async (userId: string): Promise<Shortcut[]> => {
           id: search.id,
           type: 'search',
           name: search.name,
-          section: 'library',
+          section: 'search',
           filter: search.filter,
         }
       }),
     },
   ]
+}
+
+const shortcutsCacheKey = (userId: string) => `cache:shortcuts:${userId}`
+
+export const getShortcutsCache = async (userId: string) => {
+  const cachedShortcuts = await redisDataSource.redisClient?.get(
+    shortcutsCacheKey(userId)
+  )
+  if (!cachedShortcuts) {
+    return undefined
+  }
+  return JSON.parse(cachedShortcuts) as Shortcut[]
+}
+
+export const cacheShortcuts = async (userId: string, shortcuts: Shortcut[]) => {
+  await redisDataSource.redisClient?.set(
+    shortcutsCacheKey(userId),
+    JSON.stringify(shortcuts),
+    'EX',
+    600
+  )
 }

@@ -416,7 +416,7 @@ const blackThemeSpec = {
 
 const apolloThemeSpec = {
   colors: {
-    readerBg: '#6A6968',
+    readerBg: '#474747',
     readerFont: '#F3F3F3',
     readerMargin: '#474747',
     readerFontHighContrast: 'white',
@@ -431,7 +431,7 @@ const apolloThemeSpec = {
 
     homeCardHover: '#525252',
     homeDivider: '#6A6968',
-    homeActionHoverBg: '#515151',
+    homeActionHoverBg: '#474747',
 
     thBackground: '#474747',
     thBackground2: '#515151',
@@ -453,10 +453,10 @@ const sepiaThemeSpec = {
     readerFontHighContrast: '#0A0806',
     readerTableHeader: '#FFFFFF',
 
-    thLeftMenuBackground: '#EEE8D5',
-    thNavMenuFooter: '#DDD6C1',
+    thLeftMenuBackground: '#F8F1E0',
+    thNavMenuFooter: '#EEE8D5',
 
-    thLibrarySelectionColor: '#DDD6C1',
+    thLibrarySelectionColor: '#EEE8D5',
     thLabelChipBackground: '#EEE8D5',
     thBackground4: '#DDD6C166', // used on hover of menu items
     thBorderColor: '#DDD6C1',
@@ -496,7 +496,7 @@ export const blackTheme = createTheme(ThemeId.Black, {
 export const globalStyles = globalCss({
   body: {
     colorScheme: 'var(--colorScheme-colorScheme)',
-    backgroundColor: '$thBackground',
+    backgroundColor: '$readerBg',
   },
   // browser prefers this loaded here vs in the article styling css
   '.article-inner-css': {

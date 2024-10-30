@@ -19,6 +19,14 @@ export interface BackendEnv {
     pool: {
       max: number
     }
+    replication: boolean
+    replica: {
+      host: string
+      port: number
+      userName: string
+      password: string
+      dbName: string
+    }
   }
   server: {
     jwtSecret: string
@@ -46,6 +54,9 @@ export interface BackendEnv {
   intercom: {
     token: string
     secretKey: string
+    webSecret: string
+    iosSecret: string
+    androidSecret: string
   }
   sentry: {
     dsn: string
@@ -76,6 +87,7 @@ export interface BackendEnv {
     integrationExporterUrl: string
     integrationImporterUrl: string
     importerMetricsUrl: string
+    exportTaskHandlerUrl: string
   }
   fileUpload: {
     gcsUploadBucket: string
@@ -179,6 +191,16 @@ const nullableEnvVars = [
   'NOTION_CLIENT_SECRET',
   'NOTION_AUTH_URL',
   'SCORE_API_URL',
+  'PG_REPLICATION',
+  'PG_REPLICA_HOST',
+  'PG_REPLICA_PORT',
+  'PG_REPLICA_USER',
+  'PG_REPLICA_PASSWORD',
+  'PG_REPLICA_DB',
+  'INTERCOM_WEB_SECRET',
+  'INTERCOM_IOS_SECRET',
+  'INTERCOM_ANDROID_SECRET',
+  'EXPORT_TASK_HANDLER_URL',
 ] // Allow some vars to be null/empty
 
 const envParser =
@@ -218,6 +240,14 @@ export function getEnv(): BackendEnv {
     pool: {
       max: parseInt(parse('PG_POOL_MAX'), 10),
     },
+    replication: parse('PG_REPLICATION') === 'true',
+    replica: {
+      host: parse('PG_REPLICA_HOST'),
+      port: parseInt(parse('PG_REPLICA_PORT'), 10),
+      userName: parse('PG_REPLICA_USER'),
+      password: parse('PG_REPLICA_PASSWORD'),
+      dbName: parse('PG_REPLICA_DB'),
+    },
   }
   const server = {
     jwtSecret: parse('JWT_SECRET'),
@@ -246,6 +276,9 @@ export function getEnv(): BackendEnv {
   const intercom = {
     token: parse('INTERCOM_TOKEN'),
     secretKey: parse('INTERCOM_SECRET_KEY'),
+    webSecret: parse('INTERCOM_WEB_SECRET'),
+    iosSecret: parse('INTERCOM_IOS_SECRET'),
+    androidSecret: parse('INTERCOM_ANDROID_SECRET'),
   }
   const sentry = {
     dsn: parse('SENTRY_DSN'),
@@ -269,6 +302,7 @@ export function getEnv(): BackendEnv {
     integrationExporterUrl: parse('INTEGRATION_EXPORTER_URL'),
     integrationImporterUrl: parse('INTEGRATION_IMPORTER_URL'),
     importerMetricsUrl: parse('IMPORTER_METRICS_COLLECTOR_URL'),
+    exportTaskHandlerUrl: parse('EXPORT_TASK_HANDLER_URL'),
   }
   const imageProxy = {
     url: parse('IMAGE_PROXY_URL'),

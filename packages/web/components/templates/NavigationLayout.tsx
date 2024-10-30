@@ -1,7 +1,6 @@
 import { PageMetaData, PageMetaDataProps } from '../patterns/PageMetaData'
 import { HStack, SpanBox, VStack } from '../elements/LayoutPrimitives'
 import { ReactNode, useEffect, useState, useCallback } from 'react'
-import { useGetViewerQuery } from '../../lib/networking/queries/useGetViewerQuery'
 import { navigationCommands } from '../../lib/keyboardShortcuts/navigationShortcuts'
 import { useKeyboardShortcuts } from '../../lib/keyboardShortcuts/useKeyboardShortcuts'
 import { useRouter } from 'next/router'
@@ -9,22 +8,22 @@ import { ConfirmationModal } from '../patterns/ConfirmationModal'
 import { KeyboardShortcutListModal } from './KeyboardShortcutListModal'
 import { setupAnalytics } from '../../lib/analytics'
 import { primaryCommands } from '../../lib/keyboardShortcuts/navigationShortcuts'
-import { logout } from '../../lib/logout'
+import { useLogout } from '../../lib/logout'
 import { useApplyLocalTheme } from '../../lib/hooks/useApplyLocalTheme'
-import { updateTheme } from '../../lib/themeUpdater'
-import { Priority, useRegisterActions } from 'kbar'
-import { ThemeId, theme } from '../tokens/stitches.config'
+import { useRegisterActions } from 'kbar'
+import { theme } from '../tokens/stitches.config'
 import { NavigationMenu } from './navMenu/NavigationMenu'
 import { Button } from '../elements/Button'
 import { List } from '@phosphor-icons/react'
-import { usePersistedState } from '../../lib/hooks/usePersistedState'
 import { LIBRARY_LEFT_MENU_WIDTH } from './navMenu/LibraryLegacyMenu'
 import { AddLinkModal } from './AddLinkModal'
-import { saveUrlMutation } from '../../lib/networking/mutations/saveUrlMutation'
-import {
-  showErrorToast,
-  showSuccessToastWithAction,
-} from '../../lib/toastHelpers'
+import useWindowDimensions from '../../lib/hooks/useGetWindowDimensions'
+import { useHandleAddUrl } from '../../lib/hooks/useHandleAddUrl'
+import { useGetViewer } from '../../lib/networking/viewer/useGetViewer'
+import { useQueryClient } from '@tanstack/react-query'
+import { usePersistedState } from '../../lib/hooks/usePersistedState'
+import { CloseButton } from '../elements/CloseButton'
+import { MaintenanceBanner } from '../elements/MaintenanceBanner'
 
 export type NavigationSection =
   | 'home'
@@ -37,26 +36,31 @@ export type NavigationSection =
 type NavigationLayoutProps = {
   children: ReactNode
   rightPane?: ReactNode
+  title: string
   section: NavigationSection
   pageMetaDataProps?: PageMetaDataProps
+
+  showNavigationMenu: boolean
+  setShowNavigationMenu: (show: boolean) => void
 }
 
 export function NavigationLayout(props: NavigationLayoutProps): JSX.Element {
   useApplyLocalTheme()
 
-  const { viewerData } = useGetViewerQuery()
   const router = useRouter()
+  const queryClient = useQueryClient()
   const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false)
   const [showKeyboardCommandsModal, setShowKeyboardCommandsModal] =
     useState(false)
+  const {
+    data: viewerData,
+    isFetching,
+    isPending,
+    isError,
+    status,
+  } = useGetViewer()
 
-  const [showNavMenu, setShowNavMenu, isLoading] = usePersistedState<boolean>({
-    key: 'nav-show-menu',
-    isSessionStorage: false,
-    initialValue: true,
-  })
-
-  useKeyboardShortcuts(navigationCommands(router))
+  useRegisterActions(navigationCommands(router))
 
   useKeyboardShortcuts(
     primaryCommands((action) => {
@@ -68,65 +72,34 @@ export function NavigationLayout(props: NavigationLayoutProps): JSX.Element {
     })
   )
 
-  useRegisterActions(
-    [
-      {
-        id: 'home',
-        section: 'Navigation',
-        name: 'Go to Home (Library) ',
-        shortcut: ['g h'],
-        keywords: 'go home',
-        perform: () => router?.push('/home'),
-      },
-      {
-        id: 'lightTheme',
-        section: 'Preferences',
-        name: 'Change theme (light) ',
-        shortcut: ['v', 'l'],
-        keywords: 'light theme',
-        priority: Priority.LOW,
-        perform: () => updateTheme(ThemeId.Light),
-      },
-      {
-        id: 'darkTheme',
-        section: 'Preferences',
-        name: 'Change theme (dark) ',
-        shortcut: ['v', 'd'],
-        keywords: 'dark theme',
-        priority: Priority.LOW,
-        perform: () => updateTheme(ThemeId.Dark),
-      },
-    ],
-    [router]
-  )
-
   // Attempt to identify the user if they are logged in.
   useEffect(() => {
-    setupAnalytics(viewerData?.me)
-  }, [viewerData?.me])
+    if (viewerData) {
+      setupAnalytics(viewerData)
+    }
+    if (!viewerData && !isPending) {
+      console.log('viewerData: ', viewerData, isFetching, isPending, status)
+      // there was an error loading, so lets log out
+      queryClient.clear()
+      router.push(`/login`)
+    }
+  }, [viewerData])
 
   const showLogout = useCallback(() => {
     setShowLogoutConfirmation(true)
   }, [setShowLogoutConfirmation])
 
+  const { width, previous } = useWindowDimensions()
+
+  useEffect(() => {
+    if (width < previous.width && width <= 768) {
+      props.setShowNavigationMenu(false)
+    }
+  }, [width, previous])
+
   const [showAddLinkModal, setShowAddLinkModal] = useState(false)
 
-  const handleLinkAdded = useCallback(
-    async (link: string, timezone: string, locale: string) => {
-      const result = await saveUrlMutation(link, timezone, locale)
-      if (result) {
-        showSuccessToastWithAction('Link saved', 'Read now', async () => {
-          window.location.href = `/article?url=${encodeURIComponent(link)}`
-          return Promise.resolve()
-        })
-        // const id = result.url?.match(/[^/]+$/)?.[0] ?? ''
-        // performActionOnItem('refresh', undefined as unknown as any)
-      } else {
-        showErrorToast('Error saving link', { position: 'bottom-right' })
-      }
-    },
-    []
-  )
+  const handleLinkAdded = useHandleAddUrl()
 
   useEffect(() => {
     document.addEventListener('logout', showLogout)
@@ -136,15 +109,7 @@ export function NavigationLayout(props: NavigationLayoutProps): JSX.Element {
     }
   }, [showLogout])
 
-  if (isLoading) {
-    return (
-      <HStack
-        css={{ width: '100vw', height: '100vh' }}
-        distribution="start"
-        alignment="start"
-      ></HStack>
-    )
-  }
+  const { logout } = useLogout()
 
   return (
     <HStack
@@ -152,29 +117,48 @@ export function NavigationLayout(props: NavigationLayoutProps): JSX.Element {
       distribution="start"
       alignment="start"
     >
-      {props.pageMetaDataProps ? (
-        <PageMetaData {...props.pageMetaDataProps} />
-      ) : null}
-
+      <PageMetaData path={props.section} title={props.title} />
       <Header
-        menuOpen={showNavMenu}
+        menuOpen={props.showNavigationMenu}
         toggleMenu={() => {
-          setShowNavMenu(!showNavMenu)
+          props.setShowNavigationMenu(!props.showNavigationMenu)
         }}
       />
-      {!isLoading && showNavMenu && (
+      {props.showNavigationMenu && (
         <>
           <NavigationMenu
             section={props.section}
             setShowAddLinkModal={setShowAddLinkModal}
-            showMenu={showNavMenu}
+            showMenu={props.showNavigationMenu}
+            setShowMenu={props.setShowNavigationMenu}
           />
           <SpanBox
             css={{
               width: LIBRARY_LEFT_MENU_WIDTH,
+              flexShrink: '0',
               '@mdDown': {
                 display: 'none',
               },
+            }}
+          ></SpanBox>
+          <SpanBox
+            css={{
+              display: 'none',
+              position: 'fixed',
+              zIndex: '2',
+              backgroundColor: 'var(--colors-overlay)',
+              '@mdDown': {
+                display: 'flex',
+                top: '0px',
+                left: '0px',
+                width: '100vw',
+                height: '100vh',
+                pointerEvents: 'auto',
+              },
+            }}
+            onClick={(event) => {
+              props.setShowNavigationMenu(false)
+              event.stopPropagation()
             }}
           ></SpanBox>
         </>

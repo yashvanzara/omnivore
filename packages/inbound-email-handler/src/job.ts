@@ -1,5 +1,5 @@
+import { RedisDataSource } from '@omnivore/utils'
 import { BulkJobOptions, Queue } from 'bullmq'
-import { redisDataSource } from './redis_data_source'
 
 const QUEUE_NAME = 'omnivore-backend-queue'
 export enum EmailJobType {
@@ -28,10 +28,6 @@ interface EmailJobData {
   confirmationCode?: string
 }
 
-const queue = new Queue(QUEUE_NAME, {
-  connection: redisDataSource.queueRedisClient,
-})
-
 const getPriority = (jobType: EmailJobType): number => {
   // we want to prioritized jobs by the expected time to complete
   // lower number means higher priority
@@ -53,8 +49,6 @@ const getPriority = (jobType: EmailJobType): number => {
 
 const getOpts = (jobType: EmailJobType): BulkJobOptions => {
   return {
-    removeOnComplete: true,
-    removeOnFail: true,
     attempts: 3,
     priority: getPriority(jobType),
     backoff: {
@@ -65,8 +59,13 @@ const getOpts = (jobType: EmailJobType): BulkJobOptions => {
 }
 
 export const queueEmailJob = async (
+  redisDataSource: RedisDataSource,
   jobType: EmailJobType,
   data: EmailJobData
 ) => {
+  const queue = new Queue(QUEUE_NAME, {
+    connection: redisDataSource.queueRedisClient,
+  })
+
   await queue.add(jobType, data, getOpts(jobType))
 }

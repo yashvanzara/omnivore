@@ -41,11 +41,11 @@ import {
 import { userRepository } from '../../repository/user'
 import { createUser } from '../../services/create_user'
 import { sendAccountChangeEmail } from '../../services/send_emails'
-import { softDeleteUser } from '../../services/user'
+import { cacheUser, getCachedUser, softDeleteUser } from '../../services/user'
 import { Merge } from '../../util'
 import { authorized } from '../../utils/gql-utils'
 import { validateUsername } from '../../utils/usernamePolicy'
-import { WithDataSourcesContext } from '../types'
+import { ResolverContext } from '../types'
 
 export const updateUserResolver = authorized<
   Merge<UpdateUserSuccess, { user: UserEntity }>,
@@ -81,6 +81,8 @@ export const updateUserResolver = authorized<
       },
     })
   )
+
+  await cacheUser(updatedUser)
 
   return { user: updatedUser }
 })
@@ -139,13 +141,15 @@ export const updateUserProfileResolver = authorized<
     })
   )
 
+  await cacheUser(updatedUser)
+
   return { user: updatedUser }
 })
 
 export const googleLoginResolver: ResolverFn<
   Merge<LoginResult, { me?: UserEntity }>,
   unknown,
-  WithDataSourcesContext,
+  ResolverContext,
   MutationGoogleLoginArgs
 > = async (_obj, { input }, { setAuth }) => {
   const { email, secret } = input
@@ -172,7 +176,7 @@ export const googleLoginResolver: ResolverFn<
 export const validateUsernameResolver: ResolverFn<
   boolean,
   Record<string, unknown>,
-  WithDataSourcesContext,
+  ResolverContext,
   QueryValidateUsernameArgs
 > = async (_obj, { username }) => {
   const lowerCasedUsername = username.toLowerCase()
@@ -191,7 +195,7 @@ export const validateUsernameResolver: ResolverFn<
 export const googleSignupResolver: ResolverFn<
   Merge<GoogleSignupResult, { me?: UserEntity }>,
   Record<string, unknown>,
-  WithDataSourcesContext,
+  ResolverContext,
   MutationGoogleSignupArgs
 > = async (_obj, { input }, { setAuth, log }) => {
   const { email, username, name, bio, sourceUserId, pictureUrl, secret } = input
@@ -231,7 +235,7 @@ export const googleSignupResolver: ResolverFn<
 export const logOutResolver: ResolverFn<
   LogOutResult,
   unknown,
-  WithDataSourcesContext,
+  ResolverContext,
   unknown
 > = (_, __, { clearAuth, log }) => {
   try {
@@ -246,7 +250,7 @@ export const logOutResolver: ResolverFn<
 export const getMeUserResolver: ResolverFn<
   UserEntity | undefined,
   unknown,
-  WithDataSourcesContext,
+  ResolverContext,
   unknown
 > = async (_obj, __, { claims }) => {
   try {
@@ -254,10 +258,18 @@ export const getMeUserResolver: ResolverFn<
       return undefined
     }
 
+    const userId = claims.uid
+    const cachedUser = await getCachedUser(userId)
+    if (cachedUser) {
+      return cachedUser
+    }
+
     const user = await userRepository.findById(claims.uid)
     if (!user) {
       return undefined
     }
+
+    await cacheUser(user)
 
     return user
   } catch (error) {
@@ -268,9 +280,9 @@ export const getMeUserResolver: ResolverFn<
 export const getUserResolver: ResolverFn<
   Merge<UserResult, { user?: UserEntity }>,
   unknown,
-  WithDataSourcesContext,
+  ResolverContext,
   QueryUserArgs
-> = async (_obj, { userId: id, username }, { uid }) => {
+> = async (_obj, { userId: id, username }) => {
   if (!(id || username)) {
     return { errorCodes: [UserErrorCode.BadRequest] }
   }
@@ -354,6 +366,11 @@ export const updateEmailResolver = authorized<
           email,
         })
       )
+
+      await cacheUser({
+        ...user,
+        email,
+      })
 
       return { email }
     }

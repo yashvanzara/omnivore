@@ -1,7 +1,9 @@
 import { GetSignedUrlConfig, Storage } from '@google-cloud/storage'
+import { RedisDataSource } from '@omnivore/utils'
 import * as Sentry from '@sentry/serverless'
-import { parsePdf } from './pdf'
+import 'dotenv/config'
 import { queueUpdatePageJob, State } from './job'
+import { parsePdf } from './pdf'
 
 Sentry.GCPFunction.init({
   dsn: process.env.SENTRY_DSN,
@@ -43,12 +45,12 @@ const getDocumentUrl = async (
     const [url] = await file.getSignedUrl(options)
     return new URL(url)
   } catch (e) {
-    console.debug('error getting signed url', e)
     return undefined
   }
 }
 
 export const updatePageContent = async (
+  redisDataSource: RedisDataSource,
   fileId: string,
   content?: string,
   title?: string,
@@ -56,7 +58,7 @@ export const updatePageContent = async (
   description?: string,
   state?: State
 ): Promise<string | undefined> => {
-  const job = await queueUpdatePageJob({
+  const job = await queueUpdatePageJob(redisDataSource, {
     fileId,
     content,
     title,
@@ -98,13 +100,22 @@ export const pdfHandler = Sentry.GCPFunction.wrapHttpFunction(
         return res.send('ok')
       }
 
-      console.log('handling pdf data', data)
-
       let content,
         title,
         author,
         description,
         state: State = 'SUCCEEDED' // Default to succeeded even if we fail to parse
+
+      const redisDataSource = new RedisDataSource({
+        cache: {
+          url: process.env.REDIS_URL,
+          cert: process.env.REDIS_CERT,
+        },
+        mq: {
+          url: process.env.MQ_REDIS_URL,
+          cert: process.env.MQ_REDIS_CERT,
+        },
+      })
 
       try {
         const url = await getDocumentUrl(data)
@@ -130,6 +141,7 @@ export const pdfHandler = Sentry.GCPFunction.wrapHttpFunction(
       } finally {
         // Always update the state, even if we fail to parse
         const result = await updatePageContent(
+          redisDataSource,
           data.name,
           content,
           title,
@@ -147,6 +159,8 @@ export const pdfHandler = Sentry.GCPFunction.wrapHttpFunction(
           'state',
           state
         )
+
+        await redisDataSource.shutdown()
       }
     }
 

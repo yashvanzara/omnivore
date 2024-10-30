@@ -1,6 +1,6 @@
 import { gql } from 'graphql-request'
 import useSWR from 'swr'
-import { gqlFetcher, makeGqlFetcher, publicGqlFetcher } from '../networkHelpers'
+import { makeGqlFetcher } from '../networkHelpers'
 
 type HomeResult = {
   home: {
@@ -14,7 +14,6 @@ export type HomeItemResponse = {
   isValidating: boolean
   errorMessage?: string
   sections?: HomeSection[]
-  mutate?: () => void
 }
 
 export type HomeItem = {
@@ -35,6 +34,7 @@ export type HomeItem = {
   canComment?: boolean
   canDelete?: boolean
   canSave?: boolean
+  canMove?: boolean
   canShare?: boolean
   dir?: string
 
@@ -105,6 +105,7 @@ export function useGetHomeItems(): HomeItemResponse {
                   type
                 }
                 canSave
+                canMove
                 canComment
                 canShare
                 canArchive
@@ -147,8 +148,6 @@ export function useGetHomeItems(): HomeItemResponse {
   }
 
   const result = data as HomeResult
-  console.log('result: ', result)
-
   if (result && result.home.errorCodes) {
     const errorCodes = result.home.errorCodes
     return {
@@ -159,9 +158,7 @@ export function useGetHomeItems(): HomeItemResponse {
   }
 
   if (result && result.home && result.home.edges) {
-    console.log('data', result.home)
     return {
-      mutate,
       error: false,
       isValidating,
       sections: result.home.edges.map((edge) => {

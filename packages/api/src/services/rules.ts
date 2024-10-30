@@ -1,5 +1,6 @@
 import { ArrayContains, ILike, IsNull, Not } from 'typeorm'
 import { Rule, RuleAction, RuleEventType } from '../entity/rule'
+import { StatusType } from '../entity/user'
 import { authTrx, getRepository } from '../repository'
 
 export const createRule = async (
@@ -28,8 +29,9 @@ export const createRule = async (
         ...rule,
         user: { id: userId },
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -41,16 +43,18 @@ export const deleteRule = async (id: string, userId: string) => {
       await repo.delete(id)
       return rule
     },
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
 export const deleteRules = async (userId: string) => {
   return authTrx(
     (t) => t.getRepository(Rule).delete({ user: { id: userId } }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }
 
@@ -59,7 +63,7 @@ export const findEnabledRules = async (
   eventType: RuleEventType
 ) => {
   return getRepository(Rule).findBy({
-    user: { id: userId },
+    user: { id: userId, status: StatusType.Active },
     enabled: true,
     eventTypes: ArrayContains([eventType]),
     failedAt: IsNull(), // only rules that have not failed
@@ -72,7 +76,8 @@ export const markRuleAsFailed = async (id: string, userId: string) => {
       t.getRepository(Rule).update(id, {
         failedAt: new Date(),
       }),
-    undefined,
-    userId
+    {
+      uid: userId,
+    }
   )
 }

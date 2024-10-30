@@ -13,21 +13,20 @@ import * as createTask from '../../src/utils/createTask'
 import { createTestUser } from '../db'
 import { graphqlRequest, request } from '../util'
 
-const articleSavingRequestQuery = ({
-  id,
-  url,
-}: {
-  id?: string
-  url?: string
-}) => `
-  query {
-    articleSavingRequest(id: ${id ? `"${id}"` : null}, url: ${
-  url ? `"${url}"` : null
-}) {
+const articleSavingRequestQuery = `
+  query ArticleSavingRequest($id: ID, $url: String) {
+    articleSavingRequest(id: $id, url: $url) {
       ... on ArticleSavingRequestSuccess {
         articleSavingRequest {
           id
           status
+          user {
+            id
+            profile {
+              id
+              username
+            }
+          }
         }
       }
       ... on ArticleSavingRequestError {
@@ -67,9 +66,9 @@ describe('ArticleSavingRequest API', () => {
       .post('/local/debug/fake-user-login')
       .send({ fakeEmail: user.email })
 
-    authToken = res.body.authToken
+    authToken = res.body.authToken as string
 
-    sinon.replace(createTask, 'enqueueParseRequest', sinon.fake.resolves(''))
+    sinon.replace(createTask, 'enqueueFetchContentJob', sinon.fake.resolves(''))
   })
 
   after(async () => {
@@ -124,25 +123,35 @@ describe('ArticleSavingRequest API', () => {
         createArticleSavingRequestMutation(url),
         authToken
       ).expect(200)
-      id = res.body.data.createArticleSavingRequest.articleSavingRequest.id
+      id = res.body.data.createArticleSavingRequest.articleSavingRequest
+        .id as string
     })
 
     it('returns the article saving request if exists', async () => {
-      const res = await graphqlRequest(
-        articleSavingRequestQuery({ url }),
-        authToken
-      ).expect(200)
+      const res = await graphqlRequest(articleSavingRequestQuery, authToken, {
+        id,
+      }).expect(200)
 
       expect(
         res.body.data.articleSavingRequest.articleSavingRequest.status
       ).to.eql(ArticleSavingRequestStatus.Processing)
     })
 
+    it('returns the user profile info', async () => {
+      const res = await graphqlRequest(articleSavingRequestQuery, authToken, {
+        url,
+      }).expect(200)
+
+      expect(
+        res.body.data.articleSavingRequest.articleSavingRequest.user.profile
+          .username
+      ).to.eql('fakeUser')
+    })
+
     it('returns the article saving request by id', async () => {
-      const res = await graphqlRequest(
-        articleSavingRequestQuery({ id }),
-        authToken
-      ).expect(200)
+      const res = await graphqlRequest(articleSavingRequestQuery, authToken, {
+        id,
+      }).expect(200)
 
       expect(
         res.body.data.articleSavingRequest.articleSavingRequest.status
@@ -150,10 +159,9 @@ describe('ArticleSavingRequest API', () => {
     })
 
     it('returns not_found if not exists', async () => {
-      const res = await graphqlRequest(
-        articleSavingRequestQuery({ id: 'invalid-id' }),
-        authToken
-      ).expect(200)
+      const res = await graphqlRequest(articleSavingRequestQuery, authToken, {
+        id: 'invalid-id',
+      }).expect(200)
 
       expect(res.body.data.articleSavingRequest.errorCodes).to.eql([
         ArticleSavingRequestErrorCode.NotFound,

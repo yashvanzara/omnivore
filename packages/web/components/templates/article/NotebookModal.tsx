@@ -12,13 +12,12 @@ import { useCallback, useState } from 'react'
 import { X } from '@phosphor-icons/react'
 import { Dropdown, DropdownOption } from '../../elements/DropdownElements'
 import { showErrorToast, showSuccessToast } from '../../../lib/toastHelpers'
-import { diff_match_patch } from 'diff-match-patch'
 import { MenuTrigger } from '../../elements/MenuTrigger'
 import { highlightsAsMarkdown } from '../homeFeed/HighlightItem'
 import 'react-markdown-editor-lite/lib/index.css'
 import { NotebookContent } from './Notebook'
 import { UserBasicData } from '../../../lib/networking/queries/useGetViewerQuery'
-import { ReadableItem } from '../../../lib/networking/queries/useGetLibraryItemsQuery'
+import { ReadableItem } from '../../../lib/networking/library_items/useLibraryItems'
 
 type NotebookModalProps = {
   viewer: UserBasicData
@@ -27,12 +26,6 @@ type NotebookModalProps = {
 
   viewHighlightInReader: (arg: string) => void
   onClose: (highlights: Highlight[], deletedHighlights: Highlight[]) => void
-}
-
-export const getHighlightLocation = (patch: string): number | undefined => {
-  const dmp = new diff_match_patch()
-  const patches = dmp.patch_fromText(patch)
-  return patches[0].start1 || undefined
 }
 
 export function NotebookModal(props: NotebookModalProps): JSX.Element {
